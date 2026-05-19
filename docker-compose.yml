@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: feedback
+      POSTGRES_USER: feedback
+      POSTGRES_PASSWORD: feedback
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U feedback -d feedback"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  query-service:
+    build:
+      context: .
+      dockerfile: services/query_service/Dockerfile
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8004
+      PORT: 8002
+      READ_DATABASE_URL: postgresql://feedback:feedback@postgres:5432/feedback
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    expose:
+      - "8002"
+
+  projector:
+    build:
+      context: .
+      dockerfile: services/projector/Dockerfile
+    environment:
+      EVENT_TRANSPORT: rabbitmq
+      PORT: 8003
+      QUERY_SERVICE_URL: http://query-service:8002
+      RABBITMQ_API_URL: http://rabbitmq:15672/api
+      RABBITMQ_QUEUE: feedback.events
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+    depends_on:
+      rabbitmq:
+        condition: service_started
+      query-service:
+        condition: service_started
+    expose:
+      - "8003"
+
+  command-service:
+    build:
+      context: .
+      dockerfile: services/command_service/Dockerfile
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8004
+      EVENT_TRANSPORT: rabbitmq
+      PORT: 8001
+      WRITE_DATABASE_URL: postgresql://feedback:feedback@postgres:5432/feedback
+      RABBITMQ_API_URL: http://rabbitmq:15672/api
+      RABBITMQ_QUEUE: feedback.events
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      projector:
+        condition: service_started
+    expose:
+      - "8001"
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth_service/Dockerfile
+    environment:
+      AUTH_DATABASE_URL: postgresql://feedback:feedback@postgres:5432/feedback
+      PORT: 8004
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8004"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      AUTH_BASE_URL: http://auth-service:8004
+      PORT: 8080
+      COMMAND_BASE_URL: http://command-service:8001
+      QUERY_BASE_URL: http://query-service:8002
+      FRONTEND_DIR: /app/frontend
+    depends_on:
+      - auth-service
+      - command-service
+      - query-service
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

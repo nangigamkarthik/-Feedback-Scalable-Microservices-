@@ -1,0 +1,315 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: feedback-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_DB
+              value: "feedback"
+            - name: POSTGRES_USER
+              value: "feedback"
+            - name: POSTGRES_PASSWORD
+              value: "feedback"
+          ports:
+            - containerPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: feedback-system
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: "guest"
+            - name: RABBITMQ_DEFAULT_PASS
+              value: "guest"
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: feedback-system
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: auth-service
+          image: feedback-auth-service:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "8004"
+            - name: AUTH_DATABASE_URL
+              value: "postgresql://feedback:feedback@postgres:5432/feedback"
+          ports:
+            - containerPort: 8004
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: feedback-system
+spec:
+  selector:
+    app: auth-service
+  ports:
+    - port: 8004
+      targetPort: 8004
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-service
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: query-service
+  template:
+    metadata:
+      labels:
+        app: query-service
+    spec:
+      containers:
+        - name: query-service
+          image: feedback-query-service:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AUTH_SERVICE_URL
+              value: "http://auth-service:8004"
+            - name: PORT
+              value: "8002"
+            - name: READ_DATABASE_URL
+              value: "postgresql://feedback:feedback@postgres:5432/feedback"
+          ports:
+            - containerPort: 8002
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: query-service
+  namespace: feedback-system
+spec:
+  selector:
+    app: query-service
+  ports:
+    - port: 8002
+      targetPort: 8002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: projector
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: projector
+  template:
+    metadata:
+      labels:
+        app: projector
+    spec:
+      containers:
+        - name: projector
+          image: feedback-projector:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AUTH_SERVICE_URL
+              value: "http://auth-service:8004"
+            - name: EVENT_TRANSPORT
+              value: "rabbitmq"
+            - name: PORT
+              value: "8003"
+            - name: QUERY_SERVICE_URL
+              value: "http://query-service:8002"
+            - name: RABBITMQ_API_URL
+              value: "http://rabbitmq:15672/api"
+            - name: RABBITMQ_QUEUE
+              value: "feedback.events"
+            - name: RABBITMQ_USERNAME
+              value: "guest"
+            - name: RABBITMQ_PASSWORD
+              value: "guest"
+          ports:
+            - containerPort: 8003
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: projector
+  namespace: feedback-system
+spec:
+  selector:
+    app: projector
+  ports:
+    - port: 8003
+      targetPort: 8003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: command-service
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: command-service
+  template:
+    metadata:
+      labels:
+        app: command-service
+    spec:
+      containers:
+        - name: command-service
+          image: feedback-command-service:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: EVENT_TRANSPORT
+              value: "rabbitmq"
+            - name: PORT
+              value: "8001"
+            - name: WRITE_DATABASE_URL
+              value: "postgresql://feedback:feedback@postgres:5432/feedback"
+            - name: RABBITMQ_API_URL
+              value: "http://rabbitmq:15672/api"
+            - name: RABBITMQ_QUEUE
+              value: "feedback.events"
+            - name: RABBITMQ_USERNAME
+              value: "guest"
+            - name: RABBITMQ_PASSWORD
+              value: "guest"
+          ports:
+            - containerPort: 8001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: command-service
+  namespace: feedback-system
+spec:
+  selector:
+    app: command-service
+  ports:
+    - port: 8001
+      targetPort: 8001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: feedback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: feedback-gateway:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AUTH_BASE_URL
+              value: "http://auth-service:8004"
+            - name: PORT
+              value: "8080"
+            - name: COMMAND_BASE_URL
+              value: "http://command-service:8001"
+            - name: QUERY_BASE_URL
+              value: "http://query-service:8002"
+            - name: FRONTEND_DIR
+              value: "/app/frontend"
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: feedback-system
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
